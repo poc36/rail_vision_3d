@@ -1,0 +1,104 @@
+# Rail Vision 3D — Configuration
+
+camera:
+  type: "stereo"                # "stereo" or "mono"
+  resolution:
+    width: 1280
+    height: 720
+  fps: 30
+  left_id: 0                   # Left camera device ID
+  right_id: 1                  # Right camera device ID
+  baseline_mm: 120.0           # Distance between cameras in mm
+  focal_length_px: 700.0       # Focal length in pixels (after calibration)
+
+calibration:
+  chessboard_size: [9, 6]      # Inner corners (cols, rows)
+  square_size_mm: 25.0         # Size of one square in mm
+  num_frames: 30               # Number of frames for calibration
+  save_path: "data/calibration" # Where to save calibration data
+
+depth:
+  method: "sgbm"               # "sgbm" (Semi-Global Block Matching)
+  sgbm:
+    min_disparity: 0
+    num_disparities: 128       # Must be divisible by 16
+    block_size: 5
+    p1: 600                    # Controls disparity smoothness
+    p2: 2400                   # Controls disparity smoothness
+    disp12_max_diff: 1
+    pre_filter_cap: 63
+    uniqueness_ratio: 10
+    speckle_window_size: 100
+    speckle_range: 32
+  wls_filter:
+    enabled: true
+    lambda: 8000.0
+    sigma: 1.5
+
+segmentation:
+  model: "deeplabv3"           # "deeplabv3" or "unet"
+  device: "cpu"                # "cpu" or "cuda"
+  input_size: [512, 512]       # Model input resolution
+  confidence_threshold: 0.5
+  weights_path: "data/models/rail_segmentor.pth"
+  deeplabv3:
+    backbone: "resnet50"
+    pretrained: true
+    num_classes: 2             # background + rail
+  unet:
+    in_channels: 3
+    out_channels: 2
+    features: [64, 128, 256, 512]
+
+detection:
+  morphology:
+    kernel_size: 5
+    open_iterations: 2
+    close_iterations: 3
+  min_contour_area: 500
+  hough:
+    enabled: true
+    rho: 1
+    theta_deg: 1.0
+    threshold: 100
+    min_line_length: 50
+    max_line_gap: 20
+
+reconstruction:
+  point_cloud:
+    max_depth_m: 50.0          # Maximum depth to consider
+    min_depth_m: 0.5           # Minimum depth to consider
+    downsample_voxel_size: 0.05
+    outlier_removal:
+      nb_neighbors: 20
+      std_ratio: 2.0
+  ransac:
+    ground_plane:
+      distance_threshold: 0.05
+      num_iterations: 1000
+    rail_line:
+      distance_threshold: 0.03
+      num_iterations: 500
+
+tracking:
+  kalman:
+    process_noise: 0.01
+    measurement_noise: 0.1
+    max_age: 10                # Frames without detection before dropping
+  smoothing_alpha: 0.7         # Exponential smoothing factor
+
+visualization:
+  overlay_alpha: 0.4           # Transparency of segmentation overlay
+  rail_color: [0, 255, 0]     # Green for detected rails (BGR)
+  show_depth: true
+  show_hud: true
+  window_3d:
+    width: 1024
+    height: 768
+    point_size: 2.0
+
+pipeline:
+  mode: "offline"              # "realtime", "offline", "demo"
+  save_output: false
+  output_dir: "output/"
+  log_level: "INFO"

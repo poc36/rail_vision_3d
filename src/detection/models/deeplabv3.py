@@ -38,13 +38,24 @@ class DeepLabV3Plus(nn.Module):
 
         self.num_classes = num_classes
 
-        # Загрузить pretrained DeepLabV3
-        if backbone == "resnet101":
-            weights = "DeepLabV3_ResNet101_Weights.DEFAULT" if pretrained else None
-            self.model = seg_models.deeplabv3_resnet101(weights=weights)
+        # Загрузить pretrained DeepLabV3.
+        # Если сети нет (офлайн-окружение), не падаем, а учим с нуля.
+        builder = (seg_models.deeplabv3_resnet101 if backbone == "resnet101"
+                   else seg_models.deeplabv3_resnet50)
+        weights_name = ("DeepLabV3_ResNet101_Weights.DEFAULT" if backbone == "resnet101"
+                        else "DeepLabV3_ResNet50_Weights.DEFAULT")
+        if pretrained:
+            try:
+                self.model = builder(weights=weights_name)
+            except Exception as exc:
+                logger.warning(
+                    "pretrained-веса недоступны (%s); инициализация случайная", exc)
+                # weights_backbone=None — иначе torchvision всё равно полезет
+                # скачивать ImageNet-веса backbone
+                self.model = builder(weights=None, weights_backbone=None)
+                pretrained = False
         else:
-            weights = "DeepLabV3_ResNet50_Weights.DEFAULT" if pretrained else None
-            self.model = seg_models.deeplabv3_resnet50(weights=weights)
+            self.model = builder(weights=None, weights_backbone=None)
 
         # Заменить классификатор на наш (num_classes)
         in_channels = self.model.classifier[4].in_channels

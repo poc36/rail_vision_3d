@@ -137,9 +137,11 @@ class Visualizer2D:
 
         # Hough lines
         if detection_result.hough_lines is not None:
-            for line in detection_result.hough_lines:
-                x1, y1, x2, y2 = line[0]
-                cv2.line(canvas, (x1, y1), (x2, y2), self.COLOR_HOUGH, 1)
+            # OpenCV 4 отдаёт (N,1,4), OpenCV 5 — (N,4)
+            lines = np.asarray(detection_result.hough_lines).reshape(-1, 4)
+            for x1, y1, x2, y2 in lines.astype(int):
+                cv2.line(canvas, (int(x1), int(y1)), (int(x2), int(y2)),
+                         self.COLOR_HOUGH, 1)
 
         return canvas
 

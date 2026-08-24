@@ -33,11 +33,20 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 from detect import RailPredictor  # noqa: E402
 from detection.rail_postprocess import mask_to_rails, clean_mask  # noqa: E402
+from detection.geometric_rails import ridge_response  # noqa: E402
 
 
-def plausible(prob_map: np.ndarray, thr: float, min_area: float, max_area: float,
-              min_rails: int, min_conf: float) -> tuple[bool, dict]:
-    """Проверить, похоже ли предсказание на настоящие рельсы."""
+def plausible(image: np.ndarray, prob_map: np.ndarray, thr: float,
+              min_area: float, max_area: float, min_rails: int, min_conf: float,
+              min_ridge: float = 0.16, min_elong: float = 7.0) -> tuple[bool, dict]:
+    """Проверить, похоже ли предсказание на настоящие рельсы.
+
+    Кроме уверенности сети проверяются НЕЗАВИСИМЫЕ признаки рельса:
+      * вытянутость компонент (рельс — длинная тонкая линия, а не пятно);
+      * линия должна лежать на гребне яркости исходного кадра (головка рельса) —
+        это отсекает "рельсы" на людях, граффити и отражениях;
+      * рельсов должно быть минимум два (путь — это пара).
+    """
     h, w = prob_map.shape
     m = clean_mask(prob_map, thr)
     area = float(m.sum()) / (h * w)
@@ -49,7 +58,30 @@ def plausible(prob_map: np.ndarray, thr: float, min_area: float, max_area: float
     conf = float(prob_map[m > 0].mean()) if m.any() else 0.0
     if conf < min_conf:
         return False, dict(reason="низкая уверенность", conf=round(conf, 3))
-    return True, dict(area=round(area, 4), n=len(rails), conf=round(conf, 3))
+
+    # --- вытянутость: длина линии против её толщины ---
+    mask_bin = (prob_map >= thr).astype(np.uint8)
+    total_len = sum(r.length for r in rails)
+    thickness = float(mask_bin.sum()) / max(1.0, total_len)
+    elong = total_len / max(1.0, thickness * len(rails))
+    if elong < min_elong:
+        return False, dict(reason="не вытянуто", elong=round(elong, 2))
+
+    # --- линии должны лежать на гребнях яркости (головка рельса) ---
+    gray = cv2.createCLAHE(2.0, (8, 8)).apply(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY))
+    ridge = ridge_response(gray)
+    supports = []
+    for r in rails[:4]:
+        pts = r.points.astype(int)
+        vals = [ridge[min(max(y, 0), h - 1), min(max(x, 0), w - 1)]
+                for x, y in pts]
+        supports.append(float(np.mean(vals)) if vals else 0.0)
+    ridge_sup = float(np.mean(sorted(supports, reverse=True)[:2])) if supports else 0.0
+    if ridge_sup < min_ridge:
+        return False, dict(reason="нет гребня рельса", ridge=round(ridge_sup, 3))
+
+    return True, dict(area=round(area, 4), n=len(rails), conf=round(conf, 3),
+                      elong=round(elong, 2), ridge=round(ridge_sup, 3))
 
 
 def main() -> int:
@@ -64,6 +96,10 @@ def main() -> int:
     ap.add_argument("--max-area", type=float, default=0.25)
     ap.add_argument("--min-rails", type=int, default=2)
     ap.add_argument("--min-conf", type=float, default=0.75)
+    ap.add_argument("--min-ridge", type=float, default=0.16,
+                    help="мин. отклик гребня вдоль линии рельса")
+    ap.add_argument("--min-elong", type=float, default=7.0,
+                    help="мин. вытянутость линий (длина/толщина)")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--threads", type=int, default=3)
     args = ap.parse_args()
@@ -95,8 +131,9 @@ def main() -> int:
         if p_cls < args.min_prob:
             stats["низкий p_cls"] = stats.get("низкий p_cls", 0) + 1
             continue
-        ok, info = plausible(prob_map, args.seg_thr, args.min_area, args.max_area,
-                             args.min_rails, args.min_conf)
+        ok, info = plausible(img, prob_map, args.seg_thr, args.min_area,
+                             args.max_area, args.min_rails, args.min_conf,
+                             args.min_ridge, args.min_elong)
         if not ok:
             stats[info["reason"]] = stats.get(info["reason"], 0) + 1
             continue

@@ -1,0 +1,19 @@
+{
+  "n": 1071,
+  "n_pos": 473,
+  "accuracy": 0.7871,
+  "auc": 0.8828,
+  "precision": 0.7045,
+  "recall": 0.8922,
+  "confusion": {
+    "tp": 422,
+    "fp": 177,
+    "fn": 51,
+    "tn": 421
+  },
+  "seg_images": 19,
+  "seg_iou": 0.1719,
+  "seg_dice": 0.2933,
+  "seg_dice_tol": 0.3695,
+  "fps_cpu": 17.61
+}

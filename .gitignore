@@ -37,3 +37,6 @@ Thumbs.db
 # Logs
 *.log
 output/
+
+# Compiled python in scripts
+scripts/__pycache__/

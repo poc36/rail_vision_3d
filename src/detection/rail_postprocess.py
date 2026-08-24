@@ -96,6 +96,69 @@ def mask_to_rails(prob: np.ndarray, thr: float = 0.5,
     return rails
 
 
+def refine_rails_to_ridges(image: np.ndarray, rails: list[RailPolyline],
+                           search_frac: float = 0.008) -> list[RailPolyline]:
+    """Подтянуть линии сети к головкам рельсов на исходном кадре.
+
+    Сеть даёт линию с точностью в несколько пикселей; настоящий рельс — узкий
+    гребень яркости. Локальный поиск максимума гребня делает линии точными,
+    не меняя их формы.
+    """
+    if not rails:
+        return rails
+    from .geometric_rails import ridge_response, _refine_curve
+
+    gray = cv2.createCLAHE(2.0, (8, 8)).apply(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY))
+    ridge = ridge_response(gray)
+    search = max(2, int(image.shape[1] * search_frac))
+    out = []
+    for r in rails:
+        p = r.points
+        vertical = (p[:, 1].max() - p[:, 1].min()) >= (p[:, 0].max() - p[:, 0].min())
+        if vertical:
+            xs = _refine_curve(ridge, p[:, 0].copy(), p[:, 1].copy(), search=search)
+            pts = np.stack([xs, p[:, 1]], 1)
+        else:                       # горизонтальная линия — ищем по столбцам
+            ys = _refine_curve(ridge.T, p[:, 1].copy(), p[:, 0].copy(), search=search)
+            pts = np.stack([p[:, 0], ys], 1)
+        out.append(RailPolyline(points=pts.astype(np.float32), length=r.length,
+                                mean_prob=r.mean_prob))
+    return out
+
+
+def ridge_support(image: np.ndarray, rails: list[RailPolyline]) -> list[float]:
+    """Средний отклик гребня яркости вдоль каждой линии (0..1)."""
+    if not rails:
+        return []
+    from .geometric_rails import ridge_response
+
+    h, w = image.shape[:2]
+    gray = cv2.createCLAHE(2.0, (8, 8)).apply(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY))
+    ridge = ridge_response(gray)
+    out = []
+    for r in rails:
+        vals = []
+        for x, y in r.points.astype(int):
+            xi, yi = int(np.clip(x, 1, w - 2)), int(np.clip(y, 0, h - 1))
+            vals.append(float(ridge[yi, xi - 1:xi + 2].max()))
+        out.append(float(np.mean(vals)) if vals else 0.0)
+    return out
+
+
+def filter_rails_by_ridge(image: np.ndarray, rails: list[RailPolyline],
+                          min_ridge: float = 0.12) -> list[RailPolyline]:
+    """Оставить только линии, лежащие на реальном гребне (головке рельса).
+
+    Сеть иногда рисует "рельсы" на посторонних вытянутых объектах. Настоящий
+    рельс — это узкая яркостная линия на изображении, и эта проверка,
+    независимая от сети, убирает такие ложные срабатывания.
+    """
+    if not rails:
+        return rails
+    sup = ridge_support(image, rails)
+    return [r for r, s in zip(rails, sup) if s >= min_ridge]
+
+
 def draw_rails_overlay(image: np.ndarray, prob: np.ndarray,
                        rails: list[RailPolyline] | None = None,
                        thr: float = 0.5, alpha: float = 0.45,

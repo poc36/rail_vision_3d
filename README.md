@@ -20,24 +20,81 @@
 | Обучение | `scripts/train_railnet.py` | мультизадачное обучение на CPU |
 | Self-training | `scripts/self_train.py` | сеть сама размечает новые кадры, разметка фильтруется по уверенности |
 | **Детекция** | `scripts/detect.py` | **главный скрипт: фото / папка / видео / камера** |
+| Пороги | `scripts/calibrate_thresholds.py` | калибровка порогов классификации и маски |
 | Оценка | `scripts/evaluate.py` | честные метрики на hold-out + отчёт |
+| Демо-видео | `scripts/make_demo_video.py` | движение камеры по реальным фото для проверки видеорежима |
 
 ## Быстрый старт
 
 ```bash
 pip install -r requirements.txt
 
-# 1. Скачать реальные фотографии (≈4-5 тыс. кадров, ~1 ГБ)
+# найти рельсы на своём фото / папке / видео / камере
+python scripts/detect.py --input my_photo.jpg --out result.jpg
+python scripts/detect.py --input photos/      --out results/
+python scripts/detect.py --input clip.mp4     --out clip_rails.mp4
+python scripts/detect.py --input 0            --out cam.mp4      # веб-камера
+```
+
+Скрипт печатает вероятность «в кадре есть настоящие рельсы» и рисует
+найденные рельсы; если уверенности нет — честно пишет `no rails`.
+
+Полный цикл с нуля:
+
+```bash
+# 1. Скачать реальные фотографии (≈3.8 тыс. кадров, ~1 ГБ)
 python scripts/fetch_openimages.py --out data/real --pos 3200 --neg 3200
 
-# 2. Обучить модель (CPU)
-python scripts/train_railnet.py --epochs 12 --img-size 288
+# 2. Восстановить выверенные маски рельсов из разметки в репозитории
+python scripts/label_rails.py rebuild
 
-# 3. Найти рельсы на своём фото или видео
-python scripts/detect.py --input my_photo.jpg --out result.jpg
-python scripts/detect.py --input clip.mp4    --out clip_rails.mp4
-python scripts/detect.py --input 0           --out cam.mp4      # веб-камера
+# 3. Обучить (CPU, ~1.5 часа на 4 ядрах)
+python scripts/train_railnet.py --epochs 9 --img-size 256 --freeze-early
+python scripts/train_railnet.py --epochs 8 --img-size 320 --seg-weight 2.0 \
+       --freeze-early --resume runs/railnet.pt --out runs/railnet_v2.pt
+
+# 4. Подобрать пороги и измерить качество на hold-out
+python scripts/calibrate_thresholds.py --weights runs/railnet_v2.pt
+python scripts/evaluate.py --weights runs/railnet_v2.pt --report runs/report.md
 ```
+
+## Результаты
+
+Hold-out — 1071 кадр из сплитов validation/test Open Images (в обучении не
+участвовали), из них 473 с железной дорогой.
+
+| Задача | Метрика | Значение |
+|---|---|---|
+| Классификация «есть настоящие рельсы» | accuracy | **0.787** |
+| | ROC-AUC | **0.883** |
+| | precision / recall | 0.70 / 0.89 |
+| Сегментация рельсов (19 эталонных масок) | IoU | 0.172 |
+| | Dice | 0.293 |
+| | Dice с допуском ±0.6 % ширины | 0.370 |
+| Скорость | CPU, 4 ядра | **~17 кадр/с** (320 px) |
+
+Пороги (`runs/thresholds.json`) подобраны честно: порог классификатора — на
+одной половине hold-out, метрики выше посчитаны на всём hold-out;
+порог маски — на выверенных масках обучающей выборки.
+
+### Что работает и что нет
+
+Работает:
+* уверенно отличает железнодорожную сцену от дороги, улицы, забора, леса;
+* на видах вдоль пути, на станциях и в депо ведёт линии прямо по головкам
+  рельсов, в том числе на снегу, ночью, на трамвайных путях в брусчатке;
+* не рисует рельсы там, где их нет (проверка «линия должна лежать на гребне
+  яркости» отсекает ложные срабатывания на посторонних вытянутых объектах).
+
+Не работает / ограничения:
+* рельсы, закрытые составом, или сильно боковые ракурсы часто пропускаются;
+* тонкие дальние рельсы у горизонта теряются (маска считается в 1/4
+  разрешения входа);
+* сегментация обучена на 191 выверенной вручную маске и 135 псевдо-масках —
+  это мало, метрики IoU/Dice соответствующие; главный путь улучшения —
+  больше размеченных кадров;
+* метки классификации взяты из Open Images и содержат шум (например,
+  салон самолёта с меткой `Train`).
 
 ## Данные
 

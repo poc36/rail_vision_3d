@@ -24,6 +24,7 @@ detect.py — ГЛАВНЫЙ скрипт: найти настоящие рел�
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -36,7 +37,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from detection.models.railnet import RailNet, IMAGENET_MEAN, IMAGENET_STD  # noqa: E402
-from detection.rail_postprocess import mask_to_rails, draw_rails_overlay  # noqa: E402
+from detection.rail_postprocess import (mask_to_rails, draw_rails_overlay,  # noqa: E402
+                                        refine_rails_to_ridges,
+                                        filter_rails_by_ridge)
 from detection.geometric_rails import detect_rails, draw_detection  # noqa: E402
 
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
@@ -67,11 +70,17 @@ class RailPredictor:
 
 
 def annotate(frame: np.ndarray, prob: float, mask: np.ndarray, cls_thr: float,
-             seg_thr: float, geometry: bool = False) -> tuple[np.ndarray, int]:
+             seg_thr: float, geometry: bool = False, refine: bool = True,
+             min_ridge: float = 0.12) -> tuple[np.ndarray, int]:
     """Нарисовать результат на кадре. Возвращает (кадр, число найденных рельсов)."""
     h, w = frame.shape[:2]
     found = prob >= cls_thr
     rails = mask_to_rails(mask, thr=seg_thr) if found else []
+    if rails and refine:
+        rails = refine_rails_to_ridges(frame, rails)
+    if rails and min_ridge > 0:
+        # независимая проверка: линия должна лежать на головке рельса
+        rails = filter_rails_by_ridge(frame, rails, min_ridge)
     vis = draw_rails_overlay(frame, mask if found else np.zeros_like(mask), rails,
                              thr=seg_thr)
     if geometry:
@@ -99,7 +108,8 @@ def process_image(pred: RailPredictor, path: Path, out: Path, args) -> None:
         print("не читается:", path)
         return
     prob, mask = pred(img)
-    vis, n = annotate(img, prob, mask, args.cls_thr, args.seg_thr, args.geometry)
+    vis, n = annotate(img, prob, mask, args.cls_thr, args.seg_thr, args.geometry,
+                      refine=not args.no_refine, min_ridge=args.min_ridge)
     out.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(out), vis)
     print(f"{path.name}: рельсы={prob:.2f} линий={n} -> {out}")
@@ -127,7 +137,8 @@ def process_video(pred: RailPredictor, source, out: Path, args) -> None:
         i += 1
         if args.stride > 1 and i % args.stride != 0 and ema_mask is not None:
             vis, _ = annotate(frame, ema_prob, ema_mask, args.cls_thr,
-                              args.seg_thr, args.geometry)
+                              args.seg_thr, args.geometry, refine=not args.no_refine,
+                              min_ridge=args.min_ridge)
             writer.write(vis)
             continue
         prob, mask = pred(frame)
@@ -135,7 +146,8 @@ def process_video(pred: RailPredictor, source, out: Path, args) -> None:
         ema_mask = mask if ema_mask is None else 0.6 * ema_mask + 0.4 * mask
         ema_prob = prob if ema_prob is None else 0.7 * ema_prob + 0.3 * prob
         vis, n = annotate(frame, ema_prob, ema_mask, args.cls_thr, args.seg_thr,
-                          args.geometry)
+                          args.geometry, refine=not args.no_refine,
+                              min_ridge=args.min_ridge)
         writer.write(vis)
         if i % 25 == 0:
             print(f"  кадр {i}, рельсы={ema_prob:.2f}, линий={n}", flush=True)
@@ -148,22 +160,39 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Детекция настоящих рельсов на фото/видео")
     ap.add_argument("--input", required=True, help="файл, папка, видео или индекс камеры")
     ap.add_argument("--out", default="output/detect")
-    ap.add_argument("--weights", default="runs/railnet.pt")
-    ap.add_argument("--cls-thr", type=float, default=0.5, help="порог 'есть рельсы'")
-    ap.add_argument("--seg-thr", type=float, default=0.5, help="порог маски")
+    ap.add_argument("--weights", default="runs/railnet_v2.pt")
+    ap.add_argument("--cls-thr", type=float, default=None,
+                    help="порог 'есть рельсы' (по умолчанию из runs/thresholds.json)")
+    ap.add_argument("--seg-thr", type=float, default=None,
+                    help="порог маски (по умолчанию из runs/thresholds.json)")
+    ap.add_argument("--thresholds", default="runs/thresholds.json",
+                    help="файл с откалиброванными порогами")
     ap.add_argument("--img-size", type=int, default=None)
     ap.add_argument("--stride", type=int, default=1, help="считать сеть раз в N кадров")
+    ap.add_argument("--min-ridge", type=float, default=0.12,
+                    help="мин. отклик гребня вдоль линии (0 = не фильтровать)")
+    ap.add_argument("--no-refine", action="store_true",
+                    help="не подтягивать линии к головкам рельсов")
     ap.add_argument("--geometry", action="store_true",
                     help="дополнительно рисовать геометрический детектор")
     ap.add_argument("--limit", type=int, default=0, help="макс. число файлов из папки")
     args = ap.parse_args()
+
+    # откалиброванные пороги (scripts/calibrate_thresholds.py)
+    thr_path = Path(args.thresholds)
+    calib = json.loads(thr_path.read_text()) if thr_path.exists() else {}
+    if args.cls_thr is None:
+        args.cls_thr = float(calib.get("cls_thr", 0.5))
+    if args.seg_thr is None:
+        args.seg_thr = float(calib.get("seg_thr", 0.5))
 
     weights = Path(args.weights)
     if not weights.exists():
         print(f"нет весов {weights}. Сначала обучите: python scripts/train_railnet.py")
         return 1
     pred = RailPredictor(weights, args.img_size)
-    print(f"модель: {weights} (вход {pred.img_size}px) метрики: {pred.metrics}")
+    print(f"модель: {weights} (вход {pred.img_size}px), пороги: "
+          f"класс={args.cls_thr:.2f} маска={args.seg_thr:.2f}")
 
     src = args.input
     out = Path(args.out)

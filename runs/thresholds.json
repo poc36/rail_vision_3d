@@ -1,0 +1,7 @@
+{
+  "weights": "runs/railnet_v2.pt",
+  "cls_thr": 0.5199999999999998,
+  "seg_thr": 0.8499999999999999,
+  "calib_f1": 0.779,
+  "seg_images": 80
+}

@@ -387,6 +387,29 @@ def cmd_pick(args) -> int:
     return 0
 
 
+def cmd_rebuild(args) -> int:
+    """Пересобрать PNG-маски из annotations.json (маски не хранятся в git)."""
+    ann = load_ann()
+    MASK_DIR.mkdir(parents=True, exist_ok=True)
+    n = 0
+    for image_id, rec in ann.items():
+        if not rec.get("tracks"):
+            continue
+        img_path = DATA / rec["path"]
+        if not img_path.exists():
+            continue
+        img = cv2.imread(str(img_path))
+        mask = np.zeros(img.shape[:2], np.uint8)
+        for tr in rec["tracks"]:
+            mask = np.maximum(mask, rails_mask(img.shape,
+                                               np.asarray(tr["left"], np.float32),
+                                               np.asarray(tr["right"], np.float32)))
+        cv2.imwrite(str(MASK_DIR / f"{image_id}.png"), mask)
+        n += 1
+    print(f"пересобрано масок: {n}")
+    return 0
+
+
 def cmd_stats(args) -> int:
     ann = load_ann()
     n_tracks = sum(len(v["tracks"]) for v in ann.values())
@@ -470,6 +493,9 @@ def main() -> int:
     s.add_argument("--id", required=True)
     s.add_argument("--cand", type=int, action="append", required=True)
     s.set_defaults(func=cmd_pick)
+
+    s = sub.add_parser("rebuild", help="пересобрать маски из annotations.json")
+    s.set_defaults(func=cmd_rebuild)
 
     s = sub.add_parser("stats", help="статистика разметки")
     s.set_defaults(func=cmd_stats)

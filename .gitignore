@@ -1,5 +1,9 @@
 # Data & models
 data/
+# ...но выверенную вручную разметку рельсов храним в репозитории:
+# по ней маски восстанавливаются командой label_rails.py rebuild
+!data/real/labels/
+!data/real/labels/annotations.json
 *.pth
 *.pt
 *.onnx

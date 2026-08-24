@@ -143,6 +143,21 @@ def load_rows(manifest: Path) -> tuple[list[dict], list[dict]]:
     return train, hold
 
 
+def freeze_early_layers(model: nn.Module) -> int:
+    """Заморозить stem и первую стадию энкодера.
+
+    Это самые "тяжёлые" по вычислениям слои (высокое разрешение), а признаки
+    там универсальные (края, текстуры) — дообучать их для рельсов не нужно.
+    Даёт заметное ускорение обучения на CPU без потери качества.
+    """
+    n = 0
+    for module in (model.stem, model.stage1):
+        for p in module.parameters():
+            p.requires_grad = False
+            n += p.numel()
+    return n
+
+
 def evaluate(model: nn.Module, loader: DataLoader, device: str) -> dict:
     model.eval()
     probs, labels = [], []
@@ -188,6 +203,10 @@ def main() -> int:
     ap.add_argument("--seg-weight", type=float, default=1.0)
     ap.add_argument("--resume", default="")
     ap.add_argument("--no-pretrained", action="store_true")
+    ap.add_argument("--freeze-early", action="store_true",
+                    help="заморозить stem+stage1 (быстрее на CPU)")
+    ap.add_argument("--eval-limit", type=int, default=0,
+                    help="считать метрики на первых N кадрах hold-out (0 = все)")
     args = ap.parse_args()
 
     torch.manual_seed(0)
@@ -204,8 +223,17 @@ def main() -> int:
           f"({[d.name for d in masks_dirs]}) device={device}")
 
     train_ds = RailDataset(train_rows, data_root, masks_dirs, args.img_size, True)
-    # в hold-out для метрик IoU используем только ВЫВЕРЕННЫЕ вручную маски
-    hold_ds = RailDataset(hold_rows, data_root, masks_dirs[:1], args.img_size, False)
+    # в hold-out для метрик IoU используем только ВЫВЕРЕННЫЕ вручную маски;
+    # при eval-limit оставляем все кадры с масками + часть остальных
+    eval_rows = hold_rows
+    if args.eval_limit and args.eval_limit < len(hold_rows):
+        with_mask = [r for r in hold_rows
+                     if (masks_dirs[0] / f"{r['image_id']}.png").exists()] if masks_dirs else []
+        ids = {r["image_id"] for r in with_mask}
+        rest = [r for r in hold_rows if r["image_id"] not in ids]
+        random.Random(0).shuffle(rest)
+        eval_rows = with_mask + rest[:max(0, args.eval_limit - len(with_mask))]
+    hold_ds = RailDataset(eval_rows, data_root, masks_dirs[:1], args.img_size, False)
     train_dl = DataLoader(train_ds, batch_size=args.batch, shuffle=True,
                           num_workers=args.workers, drop_last=True, persistent_workers=args.workers > 0)
     hold_dl = DataLoader(hold_ds, batch_size=args.batch, shuffle=False,
@@ -213,9 +241,11 @@ def main() -> int:
 
     model = RailNet(pretrained=not args.no_pretrained).to(device)
     if args.resume and Path(args.resume).exists():
-        ckpt = torch.load(args.resume, map_location=device)
+        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
         model.load_state_dict(ckpt["model"])
         print("возобновление с", args.resume)
+    if args.freeze_early:
+        print(f"заморожено параметров: {freeze_early_layers(model)}")
 
     n_pos = sum(int(r["label"]) for r in train_rows)
     pos_weight = torch.tensor([(len(train_rows) - n_pos) / max(1, n_pos)], device=device)
@@ -224,7 +254,8 @@ def main() -> int:
     bce_seg_none = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([8.0], device=device),
                                         reduction="none")
 
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad],
+                            lr=args.lr, weight_decay=1e-4)
     steps = max(1, len(train_dl)) * args.epochs
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=args.lr, total_steps=steps,
                                                 pct_start=0.25)
@@ -241,7 +272,7 @@ def main() -> int:
             x, y, m, hm = x.to(device), y.to(device), m.to(device), hm.to(device)
             cls_logit, seg_logit = model(x)
             loss = bce_cls(cls_logit, y)
-            run_cls += float(loss)
+            run_cls += float(loss.detach())
 
             sel = hm > 0.5
             if sel.any() and args.seg_weight > 0:

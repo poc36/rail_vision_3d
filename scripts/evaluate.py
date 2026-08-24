@@ -52,6 +52,8 @@ def main() -> int:
     ap.add_argument("--cls-thr", type=float, default=0.5)
     ap.add_argument("--seg-thr", type=float, default=0.5)
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--tol-frac", type=float, default=0.006,
+                    help="допуск для мягких метрик, доля ширины кадра")
     ap.add_argument("--report", default="runs/report.md")
     ap.add_argument("--qa-out", default="runs/qa_holdout.jpg")
     args = ap.parse_args()
@@ -66,6 +68,7 @@ def main() -> int:
 
     ys, ps = [], []
     inter = union = dice_num = dice_den = 0.0
+    tol_inter = tol_union = 0.0
     n_seg = 0
     tiles = []
     t0 = time.time()
@@ -87,6 +90,14 @@ def main() -> int:
                 union += float((g | p).sum())
                 dice_num += 2.0 * float((g & p).sum())
                 dice_den += float(g.sum() + p.sum())
+                # "мягкие" метрики: рельс — тонкая линия, промах в 2-3 пикселя
+                # визуально незаметен, поэтому считаем и IoU с допуском
+                k = max(3, int(round(args.tol_frac * mask.shape[1])) | 1)
+                kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+                g_d = cv2.dilate(g.astype(np.uint8), kern) > 0
+                p_d = cv2.dilate(p.astype(np.uint8), kern) > 0
+                tol_inter += float((g & p_d).sum()) + float((p & g_d).sum())
+                tol_union += float(g.sum()) + float(p.sum())
                 n_seg += 1
         if len(tiles) < 12 and int(r["label"]) == 1:
             from detection.rail_postprocess import draw_rails_overlay, mask_to_rails
@@ -116,6 +127,7 @@ def main() -> int:
         seg_images=n_seg,
         seg_iou=round(float(inter / union), 4) if union else None,
         seg_dice=round(float(dice_num / dice_den), 4) if dice_den else None,
+        seg_dice_tol=round(float(tol_inter / tol_union), 4) if tol_union else None,
         fps_cpu=round(len(y) / dt, 2),
     )
     print(json.dumps(metrics, indent=2, ensure_ascii=False))
@@ -146,7 +158,8 @@ def main() -> int:
         f"| метрика | значение |\n|---|---|\n"
         f"| кадров с эталонной маской | {metrics['seg_images']} |\n"
         f"| IoU | {metrics['seg_iou']} |\n"
-        f"| Dice | {metrics['seg_dice']} |\n\n"
+        f"| Dice | {metrics['seg_dice']} |\n"
+        f"| Dice с допуском ±{args.tol_frac:.3f}·W | {metrics['seg_dice_tol']} |\n\n"
         f"Скорость на CPU: **{metrics['fps_cpu']} кадр/с**\n",
         encoding="utf-8")
     print("отчёт:", rep)

@@ -42,11 +42,11 @@ cv2.setNumThreads(0)
 
 # ---------------------------------------------------------------------------
 class RailDataset(Dataset):
-    def __init__(self, rows: list[dict], data_root: Path, masks_dir: Path | None,
+    def __init__(self, rows: list[dict], data_root: Path, masks_dirs: list[Path],
                  img_size: int, train: bool):
         self.rows = rows
         self.root = data_root
-        self.masks_dir = masks_dir
+        self.masks_dirs = masks_dirs
         self.size = img_size
         self.train = train
 
@@ -107,18 +107,19 @@ class RailDataset(Dataset):
 
         label = int(row["label"])
         mask = None
-        has_mask = 0.0
+        has_mask = 0.0          # 0 нет маски, 1 выверенная маска, 2 пустая (негатив)
         if label == 0:
             # негатив: корректная маска рельсов — пустая
             mask = np.zeros(img.shape[:2], np.uint8)
-            has_mask = 1.0
-        elif self.masks_dir is not None:
-            mp = self.masks_dir / f"{row['image_id']}.png"
-            if mp.exists():
-                mask = cv2.imread(str(mp), cv2.IMREAD_GRAYSCALE)
-                if mask is not None and mask.shape[:2] == img.shape[:2]:
-                    has_mask = 1.0
-                else:
+            has_mask = 2.0
+        else:
+            for d in self.masks_dirs:
+                mp = d / f"{row['image_id']}.png"
+                if mp.exists():
+                    mask = cv2.imread(str(mp), cv2.IMREAD_GRAYSCALE)
+                    if mask is not None and mask.shape[:2] == img.shape[:2]:
+                        has_mask = 1.0
+                        break
                     mask = None
 
         img, mask = self._augment(img, mask)
@@ -196,15 +197,15 @@ def main() -> int:
     torch.set_num_threads(max(1, torch.get_num_threads()))
 
     data_root = Path(args.data)
-    masks_dir = Path(args.masks) if args.masks else None
-    if masks_dir and not masks_dir.exists():
-        masks_dir = None
+    masks_dirs = [Path(p) for p in args.masks.split(",") if p and Path(p).exists()]
     train_rows, hold_rows = load_rows(data_root / "manifest.csv")
-    n_masks = len(list(masks_dir.glob("*.png"))) if masks_dir else 0
-    print(f"train={len(train_rows)} holdout={len(hold_rows)} масок={n_masks} device={device}")
+    n_masks = sum(len(list(d.glob("*.png"))) for d in masks_dirs)
+    print(f"train={len(train_rows)} holdout={len(hold_rows)} масок={n_masks} "
+          f"({[d.name for d in masks_dirs]}) device={device}")
 
-    train_ds = RailDataset(train_rows, data_root, masks_dir, args.img_size, True)
-    hold_ds = RailDataset(hold_rows, data_root, masks_dir, args.img_size, False)
+    train_ds = RailDataset(train_rows, data_root, masks_dirs, args.img_size, True)
+    # в hold-out для метрик IoU используем только ВЫВЕРЕННЫЕ вручную маски
+    hold_ds = RailDataset(hold_rows, data_root, masks_dirs[:1], args.img_size, False)
     train_dl = DataLoader(train_ds, batch_size=args.batch, shuffle=True,
                           num_workers=args.workers, drop_last=True, persistent_workers=args.workers > 0)
     hold_dl = DataLoader(hold_ds, batch_size=args.batch, shuffle=False,
@@ -220,7 +221,8 @@ def main() -> int:
     pos_weight = torch.tensor([(len(train_rows) - n_pos) / max(1, n_pos)], device=device)
     bce_cls = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     # маска рельсов — тонкая, положительных пикселей мало
-    bce_seg = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([8.0], device=device))
+    bce_seg_none = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([8.0], device=device),
+                                        reduction="none")
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     steps = max(1, len(train_dl)) * args.epochs
@@ -242,9 +244,20 @@ def main() -> int:
             run_cls += float(loss)
 
             sel = hm > 0.5
-            if sel.any():
-                sl, sm = seg_logit[sel], m[sel]
-                seg_l = 0.5 * bce_seg(sl, sm) + 0.5 * dice_loss(sl, sm)
+            if sel.any() and args.seg_weight > 0:
+                sl, sm, kind = seg_logit[sel], m[sel], hm[sel]
+                # На позитивном кадре размечен ОДИН путь, а в кадре могут быть
+                # и другие рельсы. Поэтому фон на таких кадрах штрафуем слабее,
+                # чтобы сеть не разучилась находить неразмеченные пути.
+                # На негативных кадрах (kind=2) маска полностью верна -> вес 1.
+                bg_w = torch.where(kind.view(-1, 1, 1, 1) > 1.5,
+                                   torch.ones_like(sm), torch.full_like(sm, 0.3))
+                wmap = torch.where(sm > 0.5, torch.ones_like(sm), bg_w)
+                raw = bce_seg_none(sl, sm)
+                seg_l = 0.5 * (raw * wmap).sum() / wmap.sum().clamp(min=1.0)
+                pos_only = sm.sum(dim=(1, 2, 3)) > 0
+                if pos_only.any():
+                    seg_l = seg_l + 0.5 * dice_loss(sl[pos_only], sm[pos_only])
                 loss = loss + args.seg_weight * seg_l
                 run_seg += float(seg_l)
 

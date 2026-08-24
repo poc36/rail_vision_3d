@@ -293,9 +293,18 @@ def cmd_sheetp(args) -> int:
     """Лист лучших предложений (по убыванию score) для быстрого accept/reject."""
     props = load_proposals()
     ann = load_ann()
-    items = [(v["cands"][0]["score"], k, v) for k, v in props.items()
+    def rank(v: dict) -> float:
+        s = v["cands"][0]["score"]
+        if args.rank == "combo" and "p_cls" in v:
+            if v["p_cls"] < args.min_pcls:
+                return -1.0
+            return s * v["p_cls"]
+        return s
+
+    items = [(rank(v), k, v) for k, v in props.items()
              if v["cands"] and (args.include_labeled or k not in ann)
              and v["path"].split("/")[1] == args.subset]
+    items = [it for it in items if it[0] > 0]
     items.sort(key=lambda t: -t[0])
     items = items[args.start:args.start + args.count]
     tiles = []
@@ -443,6 +452,9 @@ def main() -> int:
     s.add_argument("--tile", type=int, default=430)
     s.add_argument("--subset", default="train")
     s.add_argument("--include-labeled", action="store_true")
+    s.add_argument("--rank", choices=["geom", "combo"], default="combo",
+                   help="combo = score детектора * вероятность классификатора")
+    s.add_argument("--min-pcls", type=float, default=0.6)
     s.add_argument("--out", default="/tmp/qa/sheetp.jpg")
     s.set_defaults(func=cmd_sheetp)
 

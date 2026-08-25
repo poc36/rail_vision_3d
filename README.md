@@ -136,3 +136,24 @@ RANSAC), `src/tracking` (фильтр Калмана), `src/visualization`.
 ## Технологии
 
 PyTorch (CPU) · OpenCV · NumPy · Open Images V7
+
+## Структура репозитория
+
+```
+scripts/
+  detect.py                 главный скрипт: рельсы на фото / папке / видео / камере
+  fetch_openimages.py       сбор реальных фото из Open Images V7
+  label_rails.py            полуавтоматическая разметка рельсов
+  rank_proposals.py         ранжирование предложений классификатором
+  train_railnet.py          обучение RailNet (классификация + сегментация)
+  self_train.py             расширение выборки псевдо-масками
+  calibrate_thresholds.py   калибровка порогов
+  evaluate.py               метрики на hold-out
+  qa_grid.py                контактные листы для визуального контроля
+  make_demo_video.py        демо-видео из реальных фото
+  demo.py, calibrate.py     3D-модуль: демо и калибровка стереопары
+src/detection/              geometric_rails, railnet, rail_postprocess, сегментация
+src/camera|reconstruction|tracking|visualization|pipeline    3D-модуль (стерео)
+runs/                       обученная модель, пороги, отчёт с метриками
+data/real/labels/           выверенная вручную разметка рельсов
+```

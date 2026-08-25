@@ -1,4 +1,5 @@
-from .unet import UNet
-from .deeplabv3 import DeepLabV3Plus
+"""Модели детекции рельсов."""
 
-__all__ = ["UNet", "DeepLabV3Plus"]
+from .railnet import RailNet, dice_loss, IMAGENET_MEAN, IMAGENET_STD
+
+__all__ = ["RailNet", "dice_loss", "IMAGENET_MEAN", "IMAGENET_STD"]

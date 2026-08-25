@@ -1,1 +1,1 @@
-# Rail Vision 3D — Computer Vision for 3D Rail Detection
+# Rail Vision — распознавание настоящих рельсов по реальным фото и видео

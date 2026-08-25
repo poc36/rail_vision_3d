@@ -126,13 +126,6 @@ Hold-out — 1071 кадр из сплитов validation/test Open Images (в �
 
 Негативные кадры дают «бесплатную» разметку: корректная маска рельсов там пустая.
 
-## 3D-модуль (стерео)
-
-Отдельная ветка проекта — восстановление рельсов в 3D по стереопаре:
-`src/camera` (калибровка, SGBM-глубина), `src/reconstruction` (облако точек,
-RANSAC), `src/tracking` (фильтр Калмана), `src/visualization`.
-Демо на синтетических данных: `python scripts/demo.py`.
-
 ## Технологии
 
 PyTorch (CPU) · OpenCV · NumPy · Open Images V7
@@ -151,9 +144,11 @@ scripts/
   evaluate.py               метрики на hold-out
   qa_grid.py                контактные листы для визуального контроля
   make_demo_video.py        демо-видео из реальных фото
-  demo.py, calibrate.py     3D-модуль: демо и калибровка стереопары
-src/detection/              geometric_rails, railnet, rail_postprocess, сегментация
-src/camera|reconstruction|tracking|visualization|pipeline    3D-модуль (стерео)
+src/detection/
+  geometric_rails.py        колея без обучения: точка схода, ректификация, шпалы
+  rail_postprocess.py       маска -> линии рельсов, уточнение по гребням
+  models/railnet.py         сеть: классификация + сегментация рельсов
+tests/                      тесты детекции (pytest)
 runs/                       обученная модель, пороги, отчёт с метриками
 data/real/labels/           выверенная вручную разметка рельсов
 ```
